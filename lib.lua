@@ -489,8 +489,10 @@ function Library:CreateWindow(opts)
 	local topbar = new("Frame", {
 		Position = UDim2.fromOffset(8, 8), Size = UDim2.new(1, -16, 0, TOP_H), BackgroundTransparency = 1, Parent = main,
 	})
-	local pill = new("Frame", {
-		Size = UDim2.new(0, 150, 1, 0), Theme = {BackgroundColor3 = "Card"}, Parent = topbar,
+	local pill = new("TextButton", {
+		Size = UDim2.new(0, 150, 1, 0), AutoButtonColor = false, Text = "",
+		Theme = {BackgroundColor3 = function() return current == homeEntry and Theme.Element or Theme.Card end},
+		Parent = topbar,
 	}, {corner(8)})
 	local pillImage = asImage(opts.Icon)
 	if pillImage then
@@ -526,6 +528,17 @@ function Library:CreateWindow(opts)
 	end
 	local closeBtn = topButton("x", 0, rgb(220, 70, 70))
 	local minBtn = topButton("-", -30, nil)
+
+	-- Barre des onglets ouverts (à droite de la pastille)
+	local PILL_W = 150
+	local tabsStrip = new("ScrollingFrame", {
+		Position = UDim2.fromOffset(PILL_W + 8, 0), Size = UDim2.new(1, -(PILL_W + 8 + 64), 1, 0),
+		BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 0, ScrollingDirection = Enum.ScrollingDirection.X,
+		CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.X, Parent = topbar,
+	}, {new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+	})})
 
 	-- Barre d'adresse (cliquer = retour à l'accueil)
 	local address = new("TextButton", {
@@ -570,7 +583,7 @@ function Library:CreateWindow(opts)
 
 	-- Dragging (souris + tactile) depuis la ligne du haut
 	local dragInput, dragStart, startPos
-	topbar.InputBegan:Connect(function(input)
+	local function beginDrag(input)
 		if not isPointer(input) then return end
 		dragInput, dragStart, startPos = input, input.Position, main.Position
 		local ender
@@ -580,7 +593,9 @@ function Library:CreateWindow(opts)
 				ender:Disconnect()
 			end
 		end)
-	end)
+	end
+	topbar.InputBegan:Connect(beginDrag)
+	tabsStrip.InputBegan:Connect(beginDrag)
 	connect(UserInputService.InputChanged, function(input)
 		if not dragInput or not isMove(input) then return end
 		local d = (input.Position - dragStart) / scale.Scale
@@ -616,6 +631,8 @@ function Library:CreateWindow(opts)
 
 	-- ## Navigation ## --
 
+	local entries = {} -- onglets créés ; entry.chip existe tant que l'onglet est ouvert
+
 	local function show(entry)
 		if current then current.page.Visible = false end
 		current = entry
@@ -624,12 +641,86 @@ function Library:CreateWindow(opts)
 		local onHome = entry == homeEntry
 		searchHolder.Visible = onHome
 		backLabel.Visible = not onHome
+		-- met à jour les couleurs de la pastille et des onglets (actif / inactif)
+		refresh(pill)
+		for _, e in ipairs(entries) do
+			if e.chip then
+				refresh(e.chip)
+				refresh(e.chipLabel)
+			end
+		end
 	end
 
 	function window:Home()
 		if homeEntry then show(homeEntry) end
 	end
+
+	function window:GetOpenTabs()
+		local names = {}
+		for _, e in ipairs(entries) do
+			if e.chip then table.insert(names, e.name) end
+		end
+		return names
+	end
 	address.MouseButton1Click:Connect(function() window:Home() end)
+	pill.MouseButton1Click:Connect(function() window:Home() end)
+
+	local chipOrder = 0
+	local closable = opts.Home ~= false -- sans accueil, impossible de rouvrir un onglet fermé
+
+	local function closeTab(entry)
+		if not entry.chip then return end
+		registry[entry.chip] = nil
+		registry[entry.chipLabel] = nil
+		entry.chip:Destroy()
+		entry.chip, entry.chipLabel = nil, nil
+		if current ~= entry then return end
+		entry.page.Visible = false
+		current = nil
+		-- retourne à l'accueil, sinon au dernier onglet encore ouvert
+		if homeEntry then
+			show(homeEntry)
+			return
+		end
+		for i = #entries, 1, -1 do
+			if entries[i].chip then
+				show(entries[i])
+				return
+			end
+		end
+	end
+
+	-- Ouvre l'onglet : si déjà ouvert, on y va simplement (jamais de doublon)
+	local function openTab(entry, silent)
+		if not entry.chip then
+			chipOrder += 1
+			local chip = new("TextButton", {
+				Size = UDim2.new(0, 116, 0, TOP_H), AutoButtonColor = false, Text = "", LayoutOrder = chipOrder,
+				Theme = {BackgroundColor3 = function() return current == entry and Theme.Element or Theme.Card end},
+				Parent = tabsStrip,
+			}, {corner(8)})
+			entry.chip = chip
+			entry.chipLabel = label({
+				Text = entry.name, TextSize = 13, TextTruncate = Enum.TextTruncate.AtEnd,
+				Color = function() return current == entry and Theme.Text or Theme.SubText end,
+				Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, closable and -34 or -16, 1, 0), Parent = chip,
+			})
+			if closable then
+				local x = new("TextButton", {
+					AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0), Size = UDim2.fromOffset(18, 18),
+					BackgroundTransparency = 1, Text = "x", Font = Enum.Font.GothamBold, TextSize = 12,
+					Theme = {TextColor3 = "SubText"}, Parent = chip,
+				}, {corner(5)})
+				x.MouseButton1Click:Connect(function() closeTab(entry) end)
+			end
+			chip.MouseEnter:Connect(function()
+				if current ~= entry then tween(chip, TWEEN_FAST, {BackgroundColor3 = Theme.Hover}) end
+			end)
+			chip.MouseLeave:Connect(function() tween(chip, TWEEN_FAST, {BackgroundColor3 = resolve(registry[chip].BackgroundColor3)}) end)
+			chip.MouseButton1Click:Connect(function() show(entry) end)
+		end
+		if not silent then show(entry) end
+	end
 
 	local function newPage()
 		return new("ScrollingFrame", {
@@ -711,22 +802,26 @@ function Library:CreateWindow(opts)
 		hover(tile, "Element", "Hover")
 		tile.MouseEnter:Connect(function() statusValue.Text = " | Open " .. name end)
 		tile.MouseLeave:Connect(function() statusValue.Text = " | " .. statusText end)
-		tile.MouseButton1Click:Connect(function() show(entry) end)
+		tile.MouseButton1Click:Connect(function() openTab(entry) end)
 	end
 
 	-- ## Tabs ## --
 
 	function window:Tab(name, icon)
 		local tab = {}
-		local entry = {page = newPage(), path = (name:lower():gsub("%s+", "-"))}
+		local entry = {page = newPage(), name = name, path = (name:lower():gsub("%s+", "-"))}
 		tab.page = entry.page
+		table.insert(entries, entry)
 
-		function tab:Open() show(entry) end
+		function tab:Open() openTab(entry) end
+		function tab:Close() closeTab(entry) end
+		function tab:IsOpen() return entry.chip ~= nil end
 
 		if homeGrid then
 			addTile(entry, name, asImage(icon))
-		elseif not current then
-			show(entry)
+		else
+			-- sans accueil : chaque onglet est ouvert d'office, le premier est affiché
+			openTab(entry, current ~= nil)
 		end
 
 		-- ## Sections ## --
